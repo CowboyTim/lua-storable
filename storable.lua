@@ -35,44 +35,62 @@ if _REQUIREDNAME == nil then
 end
 _G[_REQUIREDNAME] = S
 
-local bunpack  = require("bpack")
+local b  = require("bpack")
 local bunpack  = function(format, s)
-    return bunpack(s, format)
+    return b(s, format)
 end
 
 local push  = table.insert
+local ord   = string.byte
 
 local function _read_size(fh, cache)
     return bunpack(cache.size_unpack_fmt, fh:read(4))
 end
 
-local function SX_OBJECT(fh, cache)
+local engine, exclude_for_cache
+
+local function process_item(fh, cache)
+    local magic_type = fh:read(1)
+    print('magic:', ord(magic_type),",where:",fh:seek(),',will do:',engine[magic_type])
+    if exclude_for_cache[magic_type] == nil then
+        local i = cache.objectnr
+        cache.objectnr = cache.objectnr+1
+        print("set i:", i)
+        cache.objects[i] = engine[magic_type](fh, cache)
+        print("set i:", i, ",to:", cache.objects[i])
+        return cache.objects[i]
+    else
+        return engine[magic_type](fh, cache)
+    end
+end
+
+S.SX_OBJECT = function(fh, cache)
     -- idx's are always big-endian dumped by storable's freeze/nfreeze I think
     local i = bunpack('>I', fh:read(4))
     cache.has_sx_object = true
     return function () return i end
 end
 
-local function SX_LSCALAR(fh, cache)
+S.SX_LSCALAR = function(fh, cache)
     return fh:read(_read_size(fh, cache))
 end
 
-local function SX_LUTF8STR(fh, cache)
+S.SX_LUTF8STR = function(fh, cache)
     return SX_LSCALAR(fh, cache)
 end
 
-local function SX_ARRAY(fh, cache)
+S.SX_ARRAY = function(fh, cache)
     local data = {} 
-    for i=0,_read_size(fh, cache) do
+    for i=1,_read_size(fh, cache) do
         push(data, process_item(fh, cache))
     end
 
     return data
 end
 
-local function SX_HASH(fh, cache)
+S.SX_HASH = function(fh, cache)
     local data = {}
-    for i=0,_read_size(fh, cache) do
+    for i=1,_read_size(fh, cache) do
         value = process_item(fh, cache)
         key   = fh:read(_read_size(fh, cache))
         data[key] = value
@@ -81,80 +99,81 @@ local function SX_HASH(fh, cache)
     return data
 end
 
-local function SX_REF(fh, cache)
+S.SX_REF = function(fh, cache)
     return process_item(fh, cache)
 end
 
-local function SX_UNDEF(fh, cache)
+S.SX_UNDEF = function(fh, cache)
     return nil
 end
 
-local function SX_DOUBLE(fh, cache)
-    return bunpack(cache.double_unpack_fmt, fh:read(8))
+S.SX_DOUBLE = function(fh, cache)
+    print("SX_DOUBLE")
+    return tonumber(bunpack(cache.double_unpack_fmt, fh:read(8)))
 end
 
-local function SX_BYTE(fh, cache)
-    return bunpack('b', fh:read(1)) - 128
+S.SX_BYTE = function(fh, cache)
+    return ord(fh:read(1)) - 128
 end
 
-local function SX_NETINT(fh, cache)
+S.SX_NETINT = function(fh, cache)
     return bunpack('>I', fh:read(4))
 end
 
-local function SX_SCALAR(fh, cache)
-    return fh:read(bunpack('b', fh:read(1)))
+S.SX_SCALAR = function(fh, cache)
+    return fh:read(ord(fh:read(1)))
 end
 
-local function SX_UTF8STR(fh, cache)
+S.SX_UTF8STR = function(fh, cache)
     return SX_SCALAR(fh, cache)
 end
 
-local function SX_TIED_ARRAY(fh, cache)
+S.SX_TIED_ARRAY = function(fh, cache)
     return process_item(fh, cache)
 end
 
-local function SX_TIED_HASH(fh, cache)
+S.SX_TIED_HASH = function(fh, cache)
     return SX_TIED_ARRAY(fh, cache)
 end
 
-local function SX_TIED_SCALAR(fh, cache)
+S.SX_TIED_SCALAR = function(fh, cache)
     return SX_TIED_ARRAY(fh, cache)
 end
 
-local function SX_SV_UNDEF(fh, cache)
+S.SX_SV_UNDEF = function(fh, cache)
     return nil
 end
 
-local function SX_BLESS(fh, cache)
-    local package_name = fh:read(bunpack('b', fh:read(1)))
+S.SX_BLESS = function(fh, cache)
+    local package_name = fh:read(ord(fh:read(1)))
     cache.classes.append(package_name)
     return process_item(fh, cache)
 end
 
-local function SX_IX_BLESS(fh, cache)
+S.SX_IX_BLESS = function(fh, cache)
     -- FIXME: not used yet
-    local package_name = cache.classes[bunpack('b', fh:read(1))]
+    local package_name = cache.classes[ord(fh:read(1))]
     return process_item(fh, cache)
 end
 
-local function SX_OVERLOAD(fh, cache)
+S.SX_OVERLOAD = function(fh, cache)
     return process_item(fh, cache)
 end
 
-local function SX_TIED_KEY(fh, cache)
+S.SX_TIED_KEY = function(fh, cache)
     local data = process_item(fh, cache)
     local key  = process_item(fh, cache)
     return data
 end
     
-local function SX_TIED_IDX(fh, cache)
+S.SX_TIED_IDX = function(fh, cache)
     local data = process_item(fh, cache)
     -- idx's are always big-endian dumped by storable's freeze/nfreeze I think
     local indx_in_array = bunpack('>I', fh:read(4))
     return data
 end
 
-local function SX_HOOK(fh, cache)
+S.SX_HOOK = function(fh, cache)
     --[[
     local flags = bunpack('b', fh:read(1))
 
@@ -260,17 +279,17 @@ local function SX_HOOK(fh, cache)
     return data
 end
 
-local function SX_FLAG_HASH(fh, cache)
+S.SX_FLAG_HASH = function(fh, cache)
     -- TODO: NOT YET IMPLEMENTED!!!!!!
     print("SX_FLAG_HASH:where:", fh:seek())
-    local flags = bunpack('b', fh:read(1))
+    local flags = ord(fh:read(1))
     local size  = _read_size(fh, cache)
     print("size:",size)
     print("flags:", flags)
     local data = {}
     for i=0,size do
         local value = process_item(fh, cache)
-        local flags = bunpack('b', fh:read(1))
+        local flags = ord(fh:read(1))
         local keysize = _read_size(fh, cache)
         local key
         if keysize then
@@ -283,34 +302,39 @@ local function SX_FLAG_HASH(fh, cache)
 end
 
 -- *AFTER* all the subroutines
-local engine = {
-    ["\000"] = SX_OBJECT,      -- ( 0): Already stored object
-    ["\001"] = SX_LSCALAR,     -- ( 1): Scalar (large binary) follows (length, data)
-    ["\002"] = SX_ARRAY,       -- ( 2): Array forthcoming (size, item list)
-    ["\003"] = SX_HASH,        -- ( 3): Hash forthcoming (size, key/value pair list)
-    ["\004"] = SX_REF,         -- ( 4): Reference to object forthcoming
-    ["\005"] = SX_UNDEF,       -- ( 5): Undefined scalar
-    ["\007"] = SX_DOUBLE,      -- ( 7): Double forthcoming
-    ["\008"] = SX_BYTE,        -- ( 8): (signed) byte forthcoming
-    ["\009"] = SX_NETINT,      -- ( 9): Integer in network order forthcoming
-    ["\010"] = SX_SCALAR,      -- (10): Scalar (binary, small) follows (length, data)
-    ["\011"] = SX_TIED_ARRAY,  -- (11): Tied array forthcoming
-    ["\012"] = SX_TIED_HASH,   -- (12): Tied hash forthcoming
-    ["\013"] = SX_TIED_SCALAR, -- (13): Tied scalar forthcoming
-    ["\014"] = SX_SV_UNDEF,    -- (14): Perl's immortal PL_sv_undef
-    ["\017"] = SX_BLESS,       -- (17): Object is blessed
-    ["\018"] = SX_IX_BLESS,    -- (18): Object is blessed, classname given by index
-    ["\019"] = SX_HOOK,        -- (19): Stored via hook, user-defined
-    ["\020"] = SX_OVERLOAD,    -- (20): Overloaded reference
-    ["\021"] = SX_TIED_KEY,    -- (21): Tied magic key forthcoming
-    ["\022"] = SX_TIED_IDX,    -- (22): Tied magic index forthcoming
-    ["\023"] = SX_UTF8STR,     -- (23): UTF-8 string forthcoming (small)
-    ["\024"] = SX_LUTF8STR,    -- (24): UTF-8 string forthcoming (large)
-    ["\025"] = SX_FLAG_HASH,   -- (25): Hash with flags forthcoming (size, flags, key/flags/value triplet list)
+engine = {
+    ["\000"] = S.SX_OBJECT,      -- ( 0): Already stored object
+    ["\001"] = S.SX_LSCALAR,     -- ( 1): Scalar (large binary) follows (length, data)
+    ["\002"] = S.SX_ARRAY,       -- ( 2): Array forthcoming (size, item list)
+    ["\003"] = S.SX_HASH,        -- ( 3): Hash forthcoming (size, key/value pair list)
+    ["\004"] = S.SX_REF,         -- ( 4): Reference to object forthcoming
+    ["\005"] = S.SX_UNDEF,       -- ( 5): Undefined scalar
+    ["\007"] = S.SX_DOUBLE,      -- ( 7): Double forthcoming
+    ["\008"] = S.SX_BYTE,        -- ( 8): (signed) byte forthcoming
+    ["\009"] = S.SX_NETINT,      -- ( 9): Integer in network order forthcoming
+    ["\010"] = S.SX_SCALAR,      -- (10): Scalar (binary, small) follows (length, data)
+    ["\011"] = S.SX_TIED_ARRAY,  -- (11): Tied array forthcoming
+    ["\012"] = S.SX_TIED_HASH,   -- (12): Tied hash forthcoming
+    ["\013"] = S.SX_TIED_SCALAR, -- (13): Tied scalar forthcoming
+    ["\014"] = S.SX_SV_UNDEF,    -- (14): Perl's immortal PL_sv_undef
+    ["\017"] = S.SX_BLESS,       -- (17): Object is blessed
+    ["\018"] = S.SX_IX_BLESS,    -- (18): Object is blessed, classname given by index
+    ["\019"] = S.SX_HOOK,        -- (19): Stored via hook, user-defined
+    ["\020"] = S.SX_OVERLOAD,    -- (20): Overloaded reference
+    ["\021"] = S.SX_TIED_KEY,    -- (21): Tied magic key forthcoming
+    ["\022"] = S.SX_TIED_IDX,    -- (22): Tied magic index forthcoming
+    ["\023"] = S.SX_UTF8STR,     -- (23): UTF-8 string forthcoming (small)
+    ["\024"] = S.SX_LUTF8STR,    -- (24): UTF-8 string forthcoming (large)
+    ["\025"] = S.SX_FLAG_HASH,   -- (25): Hash with flags forthcoming (size, flags, key/flags/value triplet list)
 }
 
-local exclude_for_cache = {
-    ["\000"]=true, ["\009"]=true, ["\010"]=true, ["\011"]=true, ["\017"]=true, ["\018"]=true
+exclude_for_cache = {
+    ["\000"] = true,
+    ["\009"] = true,
+    ["\010"] = true,
+    ["\011"] = true,
+    ["\017"] = true,
+    ["\018"] = true
 }
 
 local function handle_sx_object_refs(cache, data)
@@ -331,21 +355,6 @@ local function handle_sx_object_refs(cache, data)
     return data
 end
 
-local function process_item(fh, cache)
-    local magic_type = fh:read(1)
-    print('magic:', bunpack('b',magic_type),",where:",fh:seek(),',will do:',engine[magic_type])
-    if exclude_for_cache[magic_type] == nil then
-        local i = cache.objectnr
-        cache.objectnr = cache.objectnr+1
-        print("set i:", i)
-        cache.objects[i] = engine[magic_type](fh, cache)
-        print("set i:", i, ",to:", cache.objects[i])
-        return cache.objects[i]
-    else
-        return engine[magic_type](fh, cache)
-    end
-end
-
 local function deserialize(fh)
     local magic = fh:read(1)
     local byteorder = '>'
@@ -356,8 +365,7 @@ local function deserialize(fh)
     end
     if magic == '\004' then
         version = fh:read(1)
-        local size = bunpack('b', fh:read(1))
-        byteorder = fh:read(size)
+        byteorder = fh:read(ord(fh:read(1)))
         print("OK:freeze:",byteorder)
 
         -- 32-bit ppc:     4321
@@ -373,7 +381,7 @@ local function deserialize(fh)
         local somethingtobeinvestigated = fh:read(4)
     end
 
-    print('version:', bunpack('b', version));
+    print('version:', ord(version));
     local cache = { 
         objects           = {},
         objectnr          = 0,
@@ -392,10 +400,10 @@ local function deserialize(fh)
 end
             
 function S.thaw(frozen_data)
-    local fh = cStringIO.StringIO(frozen_data)
-    local data = deserialize(fh);
-    fh:close();
-    return data
+    --local fh = cStringIO.StringIO(frozen_data)
+    --local data = deserialize(fh)
+    --fh:close()
+    return frozen_data
 end
 
 function S.retrieve(file)
